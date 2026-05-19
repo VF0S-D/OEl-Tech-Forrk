@@ -1,0 +1,155 @@
+"""OP ETERNAL save file editor — core logic extracted from aci_save_editor.py.
+
+Provides SaveSlot for reading and writing .tdt save files used by
+OPERATION ETERNAL LIBERATION.  CRC algorithm: CRC-32/BZIP2.
+"""
+import struct
+
+# ---------------------------------------------------------------------------
+# CRC-32/BZIP2  (poly 0x04C11DB7, init 0xFFFFFFFF, MSB-first, xorout 0xFFFFFFFF)
+# ---------------------------------------------------------------------------
+
+def crc32_bzip2(data: bytes) -> int:
+    crc = 0xFFFFFFFF
+    for b in data:
+        crc ^= b << 24
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF if crc & 0x80000000 else (crc << 1) & 0xFFFFFFFF
+    return crc ^ 0xFFFFFFFF
+
+assert crc32_bzip2(b"123456789") == 0xFC891918, "CRC self-test failed"
+
+MAGIC = b"SAVE"
+
+# ---------------------------------------------------------------------------
+# Slot metadata and field table (identical to aci_save_editor.py)
+# ---------------------------------------------------------------------------
+
+SLOTS = {
+    2: dict(file_size=0x0440,  entry_count=1,  data_zone=0x0024),
+    3: dict(file_size=0x16DE8, entry_count=17, data_zone=0x00E4),
+}
+
+FIELDS = [
+    dict(slot=3, arg="credits",           label="Credits",
+         offset=0x4848, fmt="u32", max=9_999_999, copies=[0x484C, 0x4854]),
+    dict(slot=3, arg="ns-upgrade-lv56",   label="Nonstandard Upgrade Form (Lv.5>6)",
+         offset=0x136F0, fmt="u32", max=0x7FFFFFFF),
+    dict(slot=3, arg="sp-lv-cap-forms",   label="Special Aircraft Lv. Cap Forms",
+         offset=0x169A9, fmt="u32", max=0x7FFFFFFF),
+
+    dict(slot=2, arg="tickets",            label="Special Supply Tickets",
+         offset=0x0164, fmt="u32", max=0x7FFFFFFF),
+    dict(slot=2, arg="fuel",               label="Stocked Fuel",
+         offset=0x0074, fmt="u32", max=0x7FFFFFFF),
+    dict(slot=2, arg="ns-upgrade-forms",  label="Nonstandard Upgrade Forms",
+         offset=0x008C, fmt="u32", max=0x7FFFFFFF),
+    dict(slot=2, arg="lv-cap-forms",      label="Lv. Cap Increase Forms",
+         offset=0x00BC, fmt="u32", max=0x7FFFFFFF),
+    dict(slot=2, arg="aircraft-research", label="Aircraft Research Reports",
+         offset=0x00EC, fmt="u32", max=0x7FFFFFFF),
+    dict(slot=2, arg="parts-research",   label="Parts Research Reports",
+         offset=0x011C, fmt="u32", max=0x7FFFFFFF),
+    dict(slot=2, arg="pilot-medals",      label="Skilled Pilot Medals",
+         offset=0x0254, fmt="u32", max=0x7FFFFFFF),
+]
+
+FIELDS_BY_SLOT = {s: [f for f in FIELDS if f["slot"] == s] for s in (2, 3)}
+
+# ---------------------------------------------------------------------------
+# Low-level helpers
+# ---------------------------------------------------------------------------
+
+def _read_u32(data: bytearray, offset: int) -> int:
+    return struct.unpack_from(">I", data, offset)[0]
+
+def _write_u32(data: bytearray, offset: int, value: int):
+    struct.pack_into(">I", data, offset, value)
+
+def _recompute_crcs(data: bytearray, entry_count: int, data_zone: int):
+    TABLE_START = 0x18
+    ENTRY_SIZE  = 12
+    for i in range(entry_count):
+        entry_off = TABLE_START + i * ENTRY_SIZE
+        length    = _read_u32(data, entry_off)
+        offset    = _read_u32(data, entry_off + 4)
+        _write_u32(data, entry_off + 8, crc32_bzip2(bytes(data[offset:offset + length])))
+    _write_u32(data, 0x08, crc32_bzip2(bytes(data[data_zone:len(data)])))
+
+def _verify_crcs(data: bytearray, entry_count: int, data_zone: int) -> bool:
+    TABLE_START = 0x18
+    ENTRY_SIZE  = 12
+    for i in range(entry_count):
+        entry_off = TABLE_START + i * ENTRY_SIZE
+        length    = _read_u32(data, entry_off)
+        offset    = _read_u32(data, entry_off + 4)
+        stored    = _read_u32(data, entry_off + 8)
+        if crc32_bzip2(bytes(data[offset:offset + length])) != stored:
+            return False
+    return crc32_bzip2(bytes(data[data_zone:len(data)])) == _read_u32(data, 0x08)
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+class SaveSlot:
+    """Wraps a loaded .tdt save file for a specific slot number (2 or 3)."""
+
+    def __init__(self, slot_num: int, path: str):
+        if slot_num not in SLOTS:
+            raise ValueError(f"Unknown slot number {slot_num}")
+        meta = SLOTS[slot_num]
+        with open(path, "rb") as f:
+            self._data = bytearray(f.read())
+        if len(self._data) != meta["file_size"]:
+            raise ValueError(
+                f"Slot {slot_num}: expected {meta['file_size']} bytes, got {len(self._data)}"
+            )
+        if self._data[:4] != MAGIC:
+            raise ValueError("Not a valid OP ETERNAL save file (missing SAVE magic)")
+        self.slot_num = slot_num
+        self._path    = path
+        self._meta    = meta
+
+    def read_all(self) -> dict[str, int]:
+        """Return {arg_name: value} for all known fields in this slot."""
+        return {
+            f["arg"]: self._get(f)
+            for f in FIELDS_BY_SLOT[self.slot_num]
+        }
+
+    def write_field(self, arg: str, value: int):
+        """Set a field by its arg name. Raises ValueError on bad value."""
+        for f in FIELDS_BY_SLOT[self.slot_num]:
+            if f["arg"] == arg:
+                if not (0 <= value <= f["max"]):
+                    raise ValueError(f"{f['label']} must be 0..{f['max']:,}, got {value:,}")
+                for off in [f["offset"]] + f.get("copies", []):
+                    if f["fmt"] == "u32":
+                        _write_u32(self._data, off, value)
+                    else:
+                        self._data[off] = value
+                return
+        raise KeyError(f"Unknown field arg '{arg}' for slot {self.slot_num}")
+
+    def verify(self) -> bool:
+        return _verify_crcs(self._data, self._meta["entry_count"], self._meta["data_zone"])
+
+    def save(self, path: str | None = None):
+        """Recompute all CRCs and write to path (defaults to original path)."""
+        _recompute_crcs(self._data, self._meta["entry_count"], self._meta["data_zone"])
+        if not self.verify():
+            raise RuntimeError("CRC verification failed after recompute — file not saved")
+        out = path or self._path
+        with open(out, "wb") as f:
+            f.write(self._data)
+
+    def _get(self, f: dict) -> int:
+        if f["fmt"] == "u32":
+            return _read_u32(self._data, f["offset"])
+        return self._data[f["offset"]]
+
+
+def fields_for_slot(slot_num: int) -> list[dict]:
+    """Return the FIELDS entries for the given slot number."""
+    return FIELDS_BY_SLOT.get(slot_num, [])

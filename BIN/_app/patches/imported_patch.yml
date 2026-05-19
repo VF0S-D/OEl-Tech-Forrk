@@ -1,0 +1,48 @@
+Version: 1.2
+
+PPU-11c753d6e0dd75f571e961e4f9f6c6500b57e74a:
+  "OPERATION ETERNAL LIBERATION":
+    Games:
+      "OPERATION ETERNAL LIBERATION":
+        NPUB31347: [02.11]
+    Patch:
+      # cb_IsGameInitError
+      - [ be32, 0x00100b20, 0x38600000 ] # li r3, 0
+      # cb_IsGameInitComplete
+      - [ be32, 0x00100a7c, 0x38600001 ] # li r3, 1
+      # cb_IsGameInitOk
+      - [ be32, 0x001006d4, 0x38600001 ] # li r3, 1
+      # cb_IsEndDownloadNews
+      - [ be32, 0x000ffee0, 0x38600001 ] # li r3, 1
+      # DAT_00b9c8b0
+      - [ be32, 0x00b9c8b0, 0x3a2f2f00 ] # https:// -> http://
+      # ToggleDebug2
+      - [ be32, 0x000e19f0, 0x38600001 ] # li r3, 1
+      # IsDebug - enables debug?
+      - [ be32, 0x000e1bb4, 0x38600001 ] # li r3, 1
+      # IsDebug2 - enables debug?
+      - [ be32, 0x000e1a6c, 0x38600001 ] # li r3, 1
+      # SetDebugUIParam
+      - [ be32, 0x000e1190, 0x38600001 ] # li r3, 1
+      # IsEnableTeamDeathMatch
+      - [ be32, 0x000f0cb8, 0x38600001 ] # li r3, 1
+      # IsCampaignAllYouCanPlay
+      - [ be32, 0x00110d80, 0x38600001 ] # li r3, 1
+      # IsCampaignAllYouCanPlayTrue
+      - [ be32, 0x00110cdc, 0x38600001 ] # li r3, 1
+      # GetCampaignMissionClearCount
+      - [ be32, 0x001274c0, 0x42800038 ] # b LAB_001274f8
+      - [ be32, 0x0012750c, 0x60000000 ] # nop
+      - [ be32, 0x00127530, 0x38600008 ] # li r3, 8
+      # IsCampaignFirstStepCleared
+      - [ be32, 0x0012759c, 0x38600001 ] # li r3, 1
+      # IsCampaignCleared - doesn't unlock all campaign missions atm
+      - [ be32, 0x00127640, 0x38600001 ] # li r3, 1
+      # IsFreeFlightUnlocked
+      - [ be32, 0x00115c04, 0x38600001 ] # li r3, 1
+      # Set Current Fuel In Memory
+      - [ be32, 0x000b8fa8, 0x38a00003 ] # li  r5, curr_fuel_number
+      - [ be32, 0x000b8fac, 0x90a3000c ] # stw r5, 0xc(r3)
+      # Set Max Fuel In Memory
+      - [ be32, 0x000b8e5c, 0x38800003 ] # li  r4, max_fuel_number
+      - [ be32, 0x000b8e60, 0x9083004c ] # stw r4, 0x4c(r3)

@@ -1,0 +1,44 @@
+# Self-hosted OPERATION ETERNAL LIBERATION server stack (Linux only).
+#
+# Usage (from this BIN/ directory):
+#   docker compose up -d --build
+#
+# The launcher's "Remote" mode should point at this host using the exposed
+# ports below. With the default mappings (8000 -> HTTP, 8001 -> HTTPS):
+#   Remote Address:  your.host:8000:8001
+#
+# If you change the host-side ports below, mirror them in the launcher:
+#   Remote Address:  your.host:HTTP_HOST_PORT:HTTPS_HOST_PORT
+#
+# RPCN state (database, generated keys, TSS files) lives on the host under
+# ./_app/rpcn/. Drop TSS files into ./_app/rpcn/tss_data/<comm_id>/.
+
+name: oel-server
+
+services:
+  gameserver:
+    build:
+      context: ..
+      dockerfile: BIN/docker/gameserver/Dockerfile
+    image: oel-gameserver:latest
+    container_name: oel-gameserver
+    restart: unless-stopped
+    ports:
+      - "8000:80"    # host 8000 -> container HTTP (:80)
+      - "8001:443"   # host 8001 -> container HTTPS (:443)
+    volumes:
+      - ./logs/gameserver:/logs
+
+  rpcn:
+    build:
+      context: ..
+      dockerfile: BIN/docker/rpcn/Dockerfile
+    image: oel-rpcn:latest
+    container_name: oel-rpcn
+    restart: unless-stopped
+    ports:
+      - "31313:31313"        # main RPCN (login, matchmaking)
+      - "31315:31315"        # TSS HTTP file server (port + 2)
+      - "3657:3657/udp"      # signaling (hardcoded UDP port)
+    volumes:
+      - ./_app/rpcn:/rpcn

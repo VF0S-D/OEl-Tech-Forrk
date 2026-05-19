@@ -1,0 +1,70 @@
+# -------------------------------------------------------
+# Built release artifacts (root-level only)
+# -------------------------------------------------------
+/*.exe
+/*.7z
+
+# -------------------------------------------------------
+# TSS files -- licensed, not distributed (dir tracked via .gitkeep)
+# -------------------------------------------------------
+/BIN/TSS/*.tss
+
+# -------------------------------------------------------
+# Python embeddable runtime (downloaded by setup.bat at first run)
+# -------------------------------------------------------
+/BIN/_app/python/
+
+# -------------------------------------------------------
+# Python bytecode
+# -------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+
+# -------------------------------------------------------
+# RPCS3 portable user data (dir tracked via .gitkeep)
+# -------------------------------------------------------
+/BIN/_app/RPCS3/portable/*
+!/BIN/_app/RPCS3/portable/.gitkeep
+
+# -------------------------------------------------------
+# Launcher runtime settings
+# -------------------------------------------------------
+/BIN/_app/settings.json
+
+# -------------------------------------------------------
+# Game server generated certs and logs
+# -------------------------------------------------------
+/BIN/_app/gameserver/cert.pem
+/BIN/_app/gameserver/key.pem
+/BIN/_app/gameserver/*.log
+/BIN/_app/gameserver/*.log.gz
+/BIN/logs/
+
+# -------------------------------------------------------
+# Upstream source checkouts (populated by SRC/clone-git-repos.bat)
+# -------------------------------------------------------
+/SRC/GIT/
+
+# -------------------------------------------------------
+# RPCN generated certs and runtime data
+# -------------------------------------------------------
+/BIN/_app/rpcn/cert.pem
+/BIN/_app/rpcn/key.pem
+/BIN/_app/rpcn/db/
+/BIN/_app/rpcn/tss_data/
+/BIN/_app/rpcn/score_data/
+/BIN/_app/rpcn/tus_data/
+
+# -------------------------------------------------------
+# Pre-built binaries -- build from SRC/GIT with patches applied
+# See SRC/apply-patches.bat and SRC/GIT submodules
+# -------------------------------------------------------
+/BIN/_app/RPCS3/*.dll
+/BIN/_app/RPCS3/*.exe
+/BIN/_app/RPCS3/*.lib
+/BIN/_app/RPCS3/*.exp
+/BIN/_app/RPCS3/*.pdb
+/BIN/_app/RPCS3/qt6/
+/BIN/_app/RPCS3/test/
+/BIN/_app/rpcn/rpcn.exe

@@ -1,0 +1,163 @@
+# OPERATION ETERNAL LIBERATION
+
+A community kit for playing OPERATION ETERNAL LIBERATION online via [RPCS3](https://rpcs3.net) and a community [RPCN](https://github.com/RipleyTom/rpcn) server.
+
+## Playing
+
+Run the latest `OP-ETERNAL-Setup-*.exe` from the releases page. It installs the kit and creates a desktop shortcut.
+
+Open the shortcut. First run downloads an embedded Python runtime and the GUI dependencies.
+
+You provide:
+
+1. PS3 firmware. When RPCS3 prompts, point it at your own `PS3UPDAT.PUP`.
+2. The game at version 2.11. In RPCS3, *File > Install Packages/Raps*; install your game files.
+3. The 15 TSS files. Drop them into the `TSS\` folder.
+
+Always launch the game from the launcher, not directly from RPCS3, so the network config matches your current LAN IP.
+
+The **Saves** tab includes a save editor, a backup browser, and a "new game" override. RPCS3 writes a local copy of every cloud save, so you can roll back or restart even after the cloud copy has been overwritten.
+
+### Updating
+
+Running a newer installer over an existing install preserves your RPCS3 portable data, RPCN config files, `settings.json`, and `BIN\TSS\`. Everything else is overwritten.
+
+### Troubleshooting
+
+- **"Failed to connect to Playstation Network".** Click the RPCN icon in RPCS3 to confirm you're logged in, and check that all 15 TSS files show as present in the launcher's **TSS Files** tab.
+- **"Failed to connect to game server".** Make sure the mock game server is listening on the same IP as your LAN, or, if it's hosted remotely, that the remote address is reachable.
+- **RPCN login fails (self-hosted).** Make sure `rpcn.exe` is running and Windows Firewall allows TCP 31313 and 31315.
+- **Can't host or join rooms.** Right-click the game in RPCS3, open *Custom Configuration > Network*, enable **UPnP**.
+- **TSS warning on launch.** Drop your 15 TSS files into `BIN\TSS\`.
+
+## Hosting your own server
+
+`BIN/docker-compose.yml` runs the game server and RPCN together on a Linux machine. A small VPS works fine.
+
+You need:
+
+- A Linux box with Docker installed.
+- The full project source, cloned with `git clone --recurse-submodules`.
+
+### Build the images
+
+From the `BIN` directory:
+
+```
+docker compose build
+docker save oel-gameserver:latest oel-rpcn:latest | gzip > oel-images.tar.gz
+```
+
+If your build host's CPU architecture differs from your server's, prefix the build with `DOCKER_DEFAULT_PLATFORM=linux/amd64`.
+
+### Copy to the server
+
+```
+scp oel-images.tar.gz docker-compose.yml user@your-vps:~/
+```
+
+### Load and start
+
+```
+mkdir -p ~/oel/_app/rpcn && cd ~/oel
+mv ~/docker-compose.yml .
+docker load < ~/oel-images.tar.gz
+docker compose up -d
+```
+
+### Open the ports
+
+Allow these on your VPS firewall, plus any cloud-provider firewall in front of it:
+
+- `8000` TCP (game server HTTP)
+- `8001` TCP (game server HTTPS)
+- `31313` TCP (RPCN login and matchmaking)
+- `31315` TCP (RPCN TSS HTTP)
+- `3657` UDP (RPCN signaling)
+
+### Add TSS files
+
+After first start, the RPCN container creates a `tss_data/<comm_id>/` subdirectory. Copy your 15 TSS files there, then:
+
+```
+docker compose restart rpcn
+```
+
+### Connect from the launcher
+
+On the **Play** tab:
+
+- **RPCN Server**: pick **Custom** and enter your server's host.
+- **Game Server**: pick **Remote** and enter `<host_ip>:8000:8001`.
+
+### Logs
+
+The game server writes its log file and rotated archives to `~/oel/logs/gameserver/` on the host. For RPCN, use `docker compose logs rpcn`.
+
+### Updating the server
+
+Rebuild locally, ship a new tarball, then on the server:
+
+```
+docker load < ~/oel-images.tar.gz
+docker compose up -d
+```
+
+The bind-mounted `_app/rpcn/` data is preserved across updates.
+
+## Building
+
+Clone with [Git](https://git-scm.com/downloads/win):
+
+```
+git clone --recurse-submodules <repo-url>
+```
+
+- Run `SRC\clone-git-repos.bat`.
+- Apply the patches with `SRC\apply-patches.bat`.
+
+`SRC\reset-git-repos.bat` reverts both submodules to baseline.
+
+### RPCS3
+
+Requires [Visual Studio 2022](https://visualstudio.microsoft.com/downloads/) with the C++ workload.
+
+Follow the upstream [BUILDING.md](https://github.com/RPCS3/rpcs3/blob/master/BUILDING.md), then copy everything from `SRC\GIT\rpcs3\bin\` into `BIN\_app\RPCS3\`.
+
+### RPCN
+
+Requires [Rust](https://rustup.rs) (MSVC ABI), [Strawberry Perl](https://strawberryperl.com), [NASM](https://www.nasm.us/), and [protoc](https://github.com/protocolbuffers/protobuf/releases) on `PATH`.
+
+```
+cd SRC\GIT\rpcn
+cargo build --release
+copy target\release\rpcn.exe ..\..\BIN\_app\rpcn\rpcn.exe
+```
+
+### Packaging
+
+Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) at `C:\Program Files (x86)\Inno Setup 6\ISCC.exe` and [7-Zip](https://www.7-zip.org/download.html) at `C:\Program Files\7-Zip\7z.exe`.
+
+Run `package.bat` to produce:
+
+- `OP-ETERNAL-Setup-{version}.exe`
+- `OEL-SRC-{version}.7z`
+- `OEL-DOCKER-{version}.7z`
+
+All versioned from `AppVersion` in `OEL.iss`. `OEL-DOCKER` is a source bundle for Linux self-hosters; they extract it, `cd BIN`, and run `docker compose up -d --build`.
+
+## Legal Disclaimer
+
+**OPERATION ETERNAL LIBERATION** is an independent, community-driven revival project and is **not** affiliated with, endorsed by, or otherwise connected to Bandai Namco Entertainment Inc. or any of the original rights holders of *Ace Combat Infinity*.
+
+This project is developed strictly for **non-commercial, hobby, and preservation purposes**. It is, and will always remain, **freely available** via its official GitHub repository. Any distribution of this content in exchange for payment or other compensation is entirely unauthorized and is not endorsed by the -OPERATIONS- team. If you encounter such activity, we strongly encourage you to report it.
+
+***
+
+### Intellectual Property Notices
+
+- **Ace Combat™** and **Ace Combat Infinity™** are intellectual properties of **Bandai Namco Entertainment Inc.** All rights reserved.
+- All trademarks, copyrights, aircraft designations, manufacturer names, trade names, brand names, and visual imagery depicted in the original game remain the exclusive property of their respective owners and Bandai Namco Entertainment Inc.
+- **PlayStation®** is a registered trademark of **Sony Interactive Entertainment Inc.**
+
+> This project makes no claim of ownership over any of the above intellectual properties. All original assets, names, and likenesses are used solely for interoperability and non-commercial fan preservation purposes.

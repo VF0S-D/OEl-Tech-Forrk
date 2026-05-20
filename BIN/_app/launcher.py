@@ -43,7 +43,7 @@ RPCS3_TSS   = PORTABLE_DIR / "tss"
 RPCN_TSS    = RPCN_DIR / "tss_data" / "NPWR04428_00"
 SETTINGS_FILE = APP_DIR / "settings.json"
 
-VERSION = "1.0.2"
+VERSION = "1.0.2.1"
 
 COMMUNITY_RPCN_HOST = "np.rpcs3.net"
 
@@ -207,7 +207,12 @@ class PlayTab(QWidget):
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
         self._settings = settings
+        self._rpcn_running = False
         self._build_ui()
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(2000)
+        self._status_timer.timeout.connect(self.refresh_setup_status)
+        self._status_timer.start()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -272,6 +277,8 @@ class PlayTab(QWidget):
         for b in (self._rpcn_official, self._rpcn_selfhosted, self._rpcn_custom,
                   self._gs_selfhosted, self._gs_remote):
             b.toggled.connect(self._update_custom_visibility)
+        for b in (self._rpcn_official, self._rpcn_selfhosted, self._rpcn_custom):
+            b.toggled.connect(self._update_rpcn_indicator)
 
         # Setup / diagnostics checklist
         setup_grp = QGroupBox("Setup")
@@ -339,6 +346,8 @@ class PlayTab(QWidget):
         status_row.addStretch()
         root.addLayout(status_row)
 
+        self._update_rpcn_indicator()
+
     def _update_custom_visibility(self):
         self._rpcn_custom_host.setVisible(self._rpcn_custom.isChecked())
         self._gs_remote_ip.setVisible(self._gs_remote.isChecked())
@@ -372,8 +381,6 @@ class PlayTab(QWidget):
         self._tss_label.setStyleSheet("color: green;" if tss_ok else "color: gray;")
         self._tss_hint.setVisible(not tss_ok)
 
-        self._launch_btn.setEnabled(True)
-
     def _browse_tss(self):
         folder = QFileDialog.getExistingDirectory(self, "Select folder containing TSS files")
         if not folder:
@@ -405,12 +412,13 @@ class PlayTab(QWidget):
         return self._gs_remote_ip.text().strip()
 
     def set_process_status(self, name: str, running: bool):
+        if name == "rpcn":
+            self._rpcn_running = running
+            self._update_rpcn_indicator()
+            return
         if name == "gameserver":
             lbl = self._gs_indicator
             text = "Gameserver"
-        elif name == "rpcn":
-            lbl = self._rpcn_indicator
-            text = "RPCN"
         else:
             lbl = self._rpcs3_indicator
             text = "RPCS3"
@@ -421,11 +429,21 @@ class PlayTab(QWidget):
             lbl.setText(f"{text}: stopped")
             lbl.setStyleSheet("color: gray;")
 
+    def _update_rpcn_indicator(self):
+        if self.get_rpcn_mode() != "self_hosted":
+            self._rpcn_indicator.setText("RPCN: Remote")
+            self._rpcn_indicator.setStyleSheet("color: green;")
+        elif self._rpcn_running:
+            self._rpcn_indicator.setText("RPCN: running")
+            self._rpcn_indicator.setStyleSheet("color: green;")
+        else:
+            self._rpcn_indicator.setText("RPCN: stopped")
+            self._rpcn_indicator.setStyleSheet("color: gray;")
+
     def set_launch_enabled(self, enabled: bool):
+        self._launch_btn.setEnabled(enabled)
         if enabled:
             self.refresh_setup_status()
-        else:
-            self._launch_btn.setEnabled(False)
 
 # ---------------------------------------------------------------------------
 # Save Editor sub-tab
@@ -741,7 +759,7 @@ class BackupRestoreTab(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        staged, errors = tus_saves.stage_new_game(self._tus_root())
+        staged, errors = tus_saves.stage_new_game(self._tus_root(), str(RPCN_YML))
         if errors:
             QMessageBox.warning(self, "Errors", "\n".join(errors))
         else:

@@ -74,51 +74,68 @@ def stage_restore(entry: BackupEntry) -> str | None:
         return str(e)
 
 
-def stage_new_game(tus_root: str) -> tuple[int, list[str]]:
-    """Write a zero-byte .tdt.restore sentinel for every known slot.
+COMM_ID = "NPWR04428_00"
 
-    Scans both existing backups and any already-staged .tdt.restore files to
-    build the slot list — mirrors the PowerShell script's logic exactly.
+DEFAULT_NEW_GAME_SLOTS = (
+    "00000000000000000002",
+    "00000000000000000003",
+    "00000000000000000004",
+    "00000000000000000008",
+)
 
-    Returns (count_staged, [error_strings]).
-    """
-    root = Path(tus_root)
-    if not root.exists():
-        return 0, [f"TUS folder not found: {tus_root}"]
 
-    # Collect (slot_dir, slot_id) pairs
-    slots: dict[str, str] = {}  # key = "dir|slot"
+def _read_npid_from_rpcn_yml(rpcn_yml_path: str) -> str | None:
+    try:
+        with open(rpcn_yml_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("NPID:"):
+                    return line.split(":", 1)[1].strip().strip('"').strip() or None
+    except OSError:
+        return None
+    return None
 
-    for f in root.rglob("*.tdt"):
-        if f.parent.name != "backups":
-            continue
-        n = f.stem
-        parts = n.split("_")
-        if not parts:
-            continue
-        slot = parts[-1]
-        if not re.fullmatch(r"\d{20}", slot):
-            continue
-        slot_dir = str(f.parent.parent)
-        slots[f"{slot_dir}|{slot}"] = (slot_dir, slot)
 
-    for f in root.rglob("*.tdt.restore"):
-        base = f.name
-        if base.endswith(".tdt.restore"):
-            slot = base[: -len(".tdt.restore")]
-            if re.fullmatch(r"\d{20}", slot):
-                slot_dir = str(f.parent)
-                slots[f"{slot_dir}|{slot}"] = (slot_dir, slot)
+def stage_new_game(tus_root: str, rpcn_yml_path: str) -> tuple[int, list[str]]:
+    """Stage .tdt.restore files so the game offers a fresh start on next boot."""
+    npid = _read_npid_from_rpcn_yml(rpcn_yml_path)
+    if not npid:
+        return 0, [
+            "No RPCN username in rpcn.yml. "
+            "Launch RPCS3 once and sign into RPCN, then try again."
+        ]
+
+    slot_dir = Path(tus_root) / COMM_ID / npid
+    try:
+        slot_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return 0, [f"Could not create {slot_dir}: {e}"]
+
+    found: set[str] = set()
+    backups = slot_dir / "backups"
+    if backups.is_dir():
+        for f in backups.glob("*.tdt"):
+            parts = f.stem.split("_")
+            if parts and re.fullmatch(r"\d{20}", parts[-1]):
+                found.add(parts[-1])
+    for f in slot_dir.glob("*.tdt"):
+        if re.fullmatch(r"\d{20}", f.stem):
+            found.add(f.stem)
+    for f in slot_dir.glob("*.tdt.restore"):
+        slot = f.name[: -len(".tdt.restore")]
+        if re.fullmatch(r"\d{20}", slot):
+            found.add(slot)
+
+    slots_to_stage = found if found else set(DEFAULT_NEW_GAME_SLOTS)
 
     staged = 0
     errors: list[str] = []
-    for slot_dir, slot in slots.values():
-        sentinel = os.path.join(slot_dir, f"{slot}.tdt.restore")
+    for slot in slots_to_stage:
+        target = slot_dir / f"{slot}.tdt.restore"
         try:
-            Path(sentinel).write_bytes(b"")
+            target.write_bytes(b"")
             staged += 1
         except OSError as e:
-            errors.append(f"Could not write {sentinel}: {e}")
+            errors.append(f"Could not write {target}: {e}")
 
     return staged, errors
 

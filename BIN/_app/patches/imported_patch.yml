@@ -40,6 +40,8 @@ PPU-11c753d6e0dd75f571e961e4f9f6c6500b57e74a:
       - [ be32, 0x00127640, 0x38600001 ] # li r3, 1
       # IsFreeFlightUnlocked
       - [ be32, 0x00115c04, 0x38600001 ] # li r3, 1
+      # Enable extra content
+      - [ be32, 0x001d79d0, 0x38600000 ] # li r3, 0
       # Set Current Fuel In Memory
       - [ be32, 0x000b8fa8, 0x38a00003 ] # li  r5, curr_fuel_number
       - [ be32, 0x000b8fac, 0x90a3000c ] # stw r5, 0xc(r3)

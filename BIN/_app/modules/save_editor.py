@@ -23,16 +23,18 @@ MAGIC = b"SAVE"
 
 # ---------------------------------------------------------------------------
 # Slot metadata and field table (identical to aci_save_editor.py)
+# Use tools\save_files_analyzer.py to find the correct slots and offsets to put into the FIELDS array.
 # ---------------------------------------------------------------------------
 
 SLOTS = {
     2: dict(file_size=0x0440,  entry_count=1,  data_zone=0x0024),
     3: dict(file_size=0x16DE8, entry_count=17, data_zone=0x00E4),
+    4: dict(file_size=0x0078,  entry_count=3,  data_zone=0x003C),
 }
 
 FIELDS = [
     dict(slot=3, arg="credits",           label="Credits",
-         offset=0x4848, fmt="u32", max=9_999_999, copies=[0x484C, 0x4854]),
+         offset=0x4848, fmt="u32", max=0x7FFFFFFF, copies=[0x484C, 0x4854]),
     dict(slot=3, arg="ns-upgrade-lv56",   label="Nonstandard Upgrade Form (Lv.5>6)",
          offset=0x136F0, fmt="u32", max=0x7FFFFFFF),
     dict(slot=3, arg="sp-lv-cap-forms",   label="Special Aircraft Lv. Cap Forms",
@@ -48,13 +50,18 @@ FIELDS = [
          offset=0x00BC, fmt="u32", max=0x7FFFFFFF),
     dict(slot=2, arg="aircraft-research", label="Aircraft Research Reports",
          offset=0x00EC, fmt="u32", max=0x7FFFFFFF),
+    dict(slot=2, arg="sw-research", label="Special Weapons Research Reports",
+         offset=0x0104, fmt="u32", max=0x7FFFFFFF),
     dict(slot=2, arg="parts-research",   label="Parts Research Reports",
          offset=0x011C, fmt="u32", max=0x7FFFFFFF),
     dict(slot=2, arg="pilot-medals",      label="Skilled Pilot Medals",
          offset=0x0254, fmt="u32", max=0x7FFFFFFF),
+
+    dict(slot=4, arg="penalty-rank",      label="Penalty Rank",
+         offset=0x0040, fmt="u32", max=0x7FFFFFFF),
 ]
 
-FIELDS_BY_SLOT = {s: [f for f in FIELDS if f["slot"] == s] for s in (2, 3)}
+FIELDS_BY_SLOT = {s: [f for f in FIELDS if f["slot"] == s] for s in (2, 3, 4)}
 
 # ---------------------------------------------------------------------------
 # Low-level helpers

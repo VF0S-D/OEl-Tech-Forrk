@@ -2,7 +2,7 @@
 ; Bump AppVersion for each release. Do not change AppId after first release.
 
 #define AppName    "OPERATION ETERNAL LIBERATION"
-#define AppVersion "1.0.2.1"
+#define AppVersion "1.0.2.2"
 
 [Setup]
 AppId={{3D7F2C1A-B8E4-4F2D-9C5E-1A2B3C4D5E6F}
@@ -29,7 +29,7 @@ Name: "{app}\_app\RPCS3\portable"
 [Files]
 
 ; Entry point
-Source: "BIN\Play OPERATION ETERNAL LIBERATION.bat"; DestDir: "{app}";                Flags: ignoreversion
+Source: "BIN\Play OPERATION ETERNAL LIBERATION (Windows).bat"; DestDir: "{app}";                Flags: ignoreversion
 
 ; Launcher
 Source: "BIN\_app\launcher.py";                    DestDir: "{app}\_app";            Flags: ignoreversion
@@ -38,6 +38,9 @@ Source: "BIN\_app\assets\*";                       DestDir: "{app}\_app\assets";
 
 ; Python modules
 Source: "BIN\_app\modules\*.py";                   DestDir: "{app}\_app\modules";    Flags: ignoreversion
+
+; Contributor tools (save-file diff helper for adding new save_editor fields)
+Source: "BIN\_app\tools\*.py";                     DestDir: "{app}\_app\tools";      Flags: ignoreversion
 
 ; Patches
 Source: "BIN\_app\patches\*";                      DestDir: "{app}\_app\patches";    Flags: ignoreversion recursesubdirs
@@ -58,4 +61,4 @@ Source: "BIN\_app\rpcn\server_redirs.cfg";         DestDir: "{app}\_app\rpcn";  
 Source: "BIN\_app\rpcn\servers.cfg";               DestDir: "{app}\_app\rpcn";       Flags: onlyifdoesntexist
 
 [Icons]
-Name: "{autodesktop}\Play OPERATION ETERNAL LIBERATION";  Filename: "{app}\Play OPERATION ETERNAL LIBERATION.bat"
+Name: "{autodesktop}\Play OPERATION ETERNAL LIBERATION";  Filename: "{app}\Play OPERATION ETERNAL LIBERATION (Windows).bat"

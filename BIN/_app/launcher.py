@@ -16,7 +16,7 @@ from PySide6.QtNetwork import (
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QTabWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout,
-    QLabel, QPushButton, QRadioButton, QLineEdit, QGroupBox,
+    QLabel, QPushButton, QToolButton, QRadioButton, QLineEdit, QGroupBox, QComboBox,
     QTreeWidget, QTreeWidgetItem, QHeaderView,
     QProgressBar, QMessageBox, QFileDialog,
     QSpinBox, QFrame, QSizePolicy, QButtonGroup, QScrollArea,
@@ -25,16 +25,20 @@ from PySide6.QtWidgets import (
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+_IS_WIN     = sys.platform == "win32"
+_EXE        = ".exe" if _IS_WIN else ""
+
 APP_DIR     = Path(__file__).parent.resolve()   # _app/
 ROOT_DIR    = APP_DIR.parent                    # folder user sees (where TSS/ lives)
 RPCS3_DIR   = APP_DIR / "RPCS3"
 RPCN_DIR    = APP_DIR / "rpcn"
 GAMESERVER_DIR = APP_DIR / "gameserver"
 PATCHES_DIR = APP_DIR / "patches"
-PYTHON_EXE  = APP_DIR / "python" / "python.exe"
-RPCS3_EXE   = RPCS3_DIR / "rpcs3.exe"
-RPCN_EXE    = RPCN_DIR / "rpcn.exe"
+PYTHON_EXE  = APP_DIR / "python" / "python.exe" if _IS_WIN else APP_DIR / "python" / "bin" / "python3"
+RPCS3_EXE   = RPCS3_DIR / f"rpcs3{_EXE}"
+RPCN_EXE    = RPCN_DIR / f"rpcn{_EXE}"
 GAMESERVER_SCRIPT = GAMESERVER_DIR / "opeternal_listener.py"
+GAMESERVER_LOG    = GAMESERVER_DIR / "gameserver.log"
 PORTABLE_DIR = RPCS3_DIR / "portable"
 RPCN_YML    = PORTABLE_DIR / "config" / "rpcn.yml"
 CUSTOM_CFG  = PORTABLE_DIR / "config" / "custom_configs" / "config_NPUB31347.yml"
@@ -43,7 +47,7 @@ RPCS3_TSS   = PORTABLE_DIR / "tss"
 RPCN_TSS    = RPCN_DIR / "tss_data" / "NPWR04428_00"
 SETTINGS_FILE = APP_DIR / "settings.json"
 
-VERSION = "1.0.2.1"
+VERSION = "1.0.2.2"
 
 COMMUNITY_RPCN_HOST = "np.rpcs3.net"
 
@@ -64,6 +68,8 @@ _DEFAULTS = {
     "gameserver_mode": "self_hosted",  # self_hosted | remote
     "gameserver_remote_ip": "",
     "tss_download_url": "",
+    "save_editor_folder": "",
+    "network_interface": "",       # "" = auto (default route), else explicit IPv4
 }
 
 def load_settings() -> dict:
@@ -110,18 +116,23 @@ class LaunchWorker(QThread):
     failed  = Signal(str)
     done    = Signal(str)  # emits resolved LAN IP
 
-    def __init__(self, rpcn_host: str, rpcn_mode: str, parent=None):
+    def __init__(self, rpcn_host: str, rpcn_mode: str, lan_ip_override: str = "", parent=None):
         super().__init__(parent)
         self.rpcn_host = rpcn_host
         self.rpcn_mode = rpcn_mode
+        self.lan_ip_override = lan_ip_override
 
     def run(self):
         try:
             # IP swap always targets the LAN IP. The local listener handles the
             # remote-server case by forwarding traffic to the real game server.
-            self.log.emit("Detecting LAN IP...")
-            lan_ip = ip_detect.get_lan_ip()
-            self.log.emit(f"LAN IP: {lan_ip}")
+            if self.lan_ip_override:
+                lan_ip = self.lan_ip_override
+                self.log.emit(f"LAN IP: {lan_ip} (selected)")
+            else:
+                self.log.emit("Detecting LAN IP...")
+                lan_ip = ip_detect.get_lan_ip()
+                self.log.emit(f"LAN IP: {lan_ip}")
 
             swap_ip   = lan_ip
             rpcn_host = lan_ip if self.rpcn_mode == "self_hosted" else self.rpcn_host
@@ -244,17 +255,35 @@ class PlayTab(QWidget):
         self._gs_selfhosted = QRadioButton("Self-Hosted")
         self._gs_remote     = QRadioButton("Remote")
         self._gs_group      = QButtonGroup(self)
-        for b in (self._gs_selfhosted, self._gs_remote):
-            self._gs_group.addButton(b)
-            gs_layout.addWidget(b)
-        gs_remote_row = QHBoxLayout()
+        self._gs_group.addButton(self._gs_selfhosted)
+        self._gs_group.addButton(self._gs_remote)
+
+        gs_layout.addWidget(self._gs_selfhosted)
+        self._gs_iface_row_widget = QWidget()
+        gs_iface_row = QHBoxLayout(self._gs_iface_row_widget)
+        gs_iface_row.setContentsMargins(20, 0, 0, 0)
+        gs_iface_row.addWidget(QLabel("Network interface:"))
+        self._iface_combo = QComboBox()
+        gs_iface_row.addWidget(self._iface_combo, 1)
+        self._iface_refresh = QPushButton("Refresh")
+        self._iface_refresh.setFixedWidth(80)
+        self._iface_refresh.clicked.connect(self._refresh_interfaces)
+        gs_iface_row.addWidget(self._iface_refresh)
+        gs_layout.addWidget(self._gs_iface_row_widget)
+
+        gs_layout.addWidget(self._gs_remote)
+        self._gs_remote_row_widget = QWidget()
+        gs_remote_row = QHBoxLayout(self._gs_remote_row_widget)
         gs_remote_row.setContentsMargins(20, 0, 0, 0)
         self._gs_remote_ip = QLineEdit()
         self._gs_remote_ip.setPlaceholderText("host  or  host:http_port:https_port")
         gs_remote_row.addWidget(QLabel("Address:"))
         gs_remote_row.addWidget(self._gs_remote_ip)
-        gs_layout.addLayout(gs_remote_row)
+        gs_layout.addWidget(self._gs_remote_row_widget)
+
         root.addWidget(gs_grp)
+        self._refresh_interfaces()
+        self._iface_combo.currentIndexChanged.connect(self._on_iface_changed)
 
         # Restore saved modes
         rpcn_mode = self._settings.get("rpcn_mode", "official")
@@ -350,7 +379,8 @@ class PlayTab(QWidget):
 
     def _update_custom_visibility(self):
         self._rpcn_custom_host.setVisible(self._rpcn_custom.isChecked())
-        self._gs_remote_ip.setVisible(self._gs_remote.isChecked())
+        self._gs_iface_row_widget.setVisible(self._gs_selfhosted.isChecked())
+        self._gs_remote_row_widget.setVisible(self._gs_remote.isChecked())
 
     def refresh_setup_status(self):
         fw_ok   = FIRMWARE_INDICATOR.exists()
@@ -411,6 +441,26 @@ class PlayTab(QWidget):
     def get_gameserver_remote_ip(self) -> str:
         return self._gs_remote_ip.text().strip()
 
+    def get_lan_ip_override(self) -> str:
+        """Return the user-selected LAN IP, or '' if Auto is selected."""
+        return self._iface_combo.currentData() or ""
+
+    def _refresh_interfaces(self):
+        previous = self._iface_combo.currentData() if self._iface_combo.count() else \
+            self._settings.get("network_interface", "")
+        self._iface_combo.blockSignals(True)
+        self._iface_combo.clear()
+        self._iface_combo.addItem("Auto (default route)", "")
+        for ip in ip_detect.list_lan_ips():
+            self._iface_combo.addItem(ip, ip)
+        idx = self._iface_combo.findData(previous) if previous else 0
+        self._iface_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._iface_combo.blockSignals(False)
+
+    def _on_iface_changed(self):
+        self._settings["network_interface"] = self._iface_combo.currentData() or ""
+        save_settings(self._settings)
+
     def set_process_status(self, name: str, running: bool):
         if name == "rpcn":
             self._rpcn_running = running
@@ -451,11 +501,19 @@ class PlayTab(QWidget):
 class SaveEditorTab(QWidget):
     restore_staged = Signal()
 
+    _SLOT_IDS = (
+        (2, "00000000000000000002"),
+        (3, "00000000000000000003"),
+        (4, "00000000000000000004"),
+    )
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._slot2: save_editor.SaveSlot | None = None
         self._slot3: save_editor.SaveSlot | None = None
+        self._slot4: save_editor.SaveSlot | None = None
         self._build_ui()
+        self._try_auto_read()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -478,19 +536,39 @@ class SaveEditorTab(QWidget):
         sep.setFrameShape(QFrame.Shape.HLine)
         root.addWidget(sep)
 
+        # Penalty Rank quick action (always visible)
+        pen_row = QHBoxLayout()
+        self._penalty_label = QLabel("Penalty Rank: --")
+        self._reset_penalty_btn = QPushButton("Reset Penalty Rank")
+        self._reset_penalty_btn.setEnabled(False)
+        self._reset_penalty_btn.clicked.connect(self._reset_penalty_rank)
+        pen_row.addWidget(self._penalty_label, 1)
+        pen_row.addWidget(self._reset_penalty_btn)
+        root.addLayout(pen_row)
+
+        self._toggle_btn = QToolButton()
+        self._toggle_btn.setText("Save editor")
+        self._toggle_btn.setCheckable(True)
+        self._toggle_btn.setArrowType(Qt.ArrowType.RightArrow)
+        self._toggle_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._toggle_btn.setAutoRaise(True)
+        self._toggle_btn.toggled.connect(self._toggle_advanced)
+        root.addWidget(self._toggle_btn, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self._advanced = QWidget()
+        adv_root = QVBoxLayout(self._advanced)
+        adv_root.setContentsMargins(0, 0, 0, 0)
+        adv_root.setSpacing(10)
+
         form = QFormLayout()
         form.setSpacing(8)
 
-        # Slot 3 fields
-        slot3_lbl = QLabel("Game State (slot 3)")
+        self._spins: dict[str, QSpinBox] = {}
+
+        slot3_lbl = QLabel("Slot 3")
         slot3_lbl.setStyleSheet("font-weight: bold;")
         form.addRow(slot3_lbl)
-
-        self._spins: dict[str, QSpinBox] = {}
-        slot3_fields = save_editor.fields_for_slot(3)
-        slot2_fields = save_editor.fields_for_slot(2)
-
-        for f in slot3_fields:
+        for f in save_editor.fields_for_slot(3):
             spin = QSpinBox()
             spin.setRange(0, min(f["max"], 2_147_483_647))
             spin.setSingleStep(100_000)
@@ -500,11 +578,10 @@ class SaveEditorTab(QWidget):
 
         form.addRow(QLabel(""))  # spacer
 
-        slot2_lbl = QLabel("Player Profile (slot 2)")
+        slot2_lbl = QLabel("Slot 2")
         slot2_lbl.setStyleSheet("font-weight: bold;")
         form.addRow(slot2_lbl)
-
-        for f in slot2_fields:
+        for f in save_editor.fields_for_slot(2):
             spin = QSpinBox()
             spin.setRange(0, min(f["max"], 2_147_483_647))
             spin.setSingleStep(1_000)
@@ -512,13 +589,29 @@ class SaveEditorTab(QWidget):
             self._spins[f["arg"]] = spin
             form.addRow(f["label"] + ":", spin)
 
+        form.addRow(QLabel(""))  # spacer
+
+        slot4_lbl = QLabel("Slot 4")
+        slot4_lbl.setStyleSheet("font-weight: bold;")
+        form.addRow(slot4_lbl)
+        for f in save_editor.fields_for_slot(4):
+            spin = QSpinBox()
+            spin.setRange(0, min(f["max"], 2_147_483_647))
+            spin.setSingleStep(1)
+            spin.setGroupSeparatorShown(True)
+            self._spins[f["arg"]] = spin
+            form.addRow(f["label"] + ":", spin)
+
+        for spin in self._spins.values():
+            spin.setEnabled(False)
+
         scroll_widget = QWidget()
         scroll_widget.setLayout(form)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(scroll_widget)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        root.addWidget(scroll, 1)
+        adv_root.addWidget(scroll, 1)
 
         btn_row = QHBoxLayout()
         self._read_btn  = QPushButton("Read from Files")
@@ -526,80 +619,145 @@ class SaveEditorTab(QWidget):
         self._write_btn.setEnabled(False)
         btn_row.addWidget(self._read_btn)
         btn_row.addWidget(self._write_btn)
-        root.addLayout(btn_row)
+        adv_root.addLayout(btn_row)
 
         note = QLabel(
             "This list is a work in progress. Additional fields can be added by editing "
             "modules/save_editor.py and following the instructions inside."
         )
         note.setWordWrap(True)
-        root.addWidget(note)
+        adv_root.addWidget(note)
 
         warn = QLabel("⚠  Back up your saves before writing.")
         warn.setStyleSheet("color: #c0392b;")
-        root.addWidget(warn)
+        adv_root.addWidget(warn)
+
+        self._advanced.hide()
+        root.addWidget(self._advanced, 1)
+        # Soaks up empty space when _advanced is hidden; the section's
+        # stretch=1 takes the room back when expanded.
+        root.addStretch(0)
 
         self._read_btn.clicked.connect(self._read_saves)
         self._write_btn.clicked.connect(self._write_saves)
 
+    def _toggle_advanced(self, checked: bool):
+        self._advanced.setVisible(checked)
+        self._toggle_btn.setArrowType(
+            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
+        )
+
     def _auto_detect_saves(self):
-        pattern = str(PORTABLE_DIR / "tus" / "NPWR04428_00" / "*")
-        matches = glob.glob(pattern)
+        saved = load_settings().get("save_editor_folder", "")
+        if saved and os.path.isdir(saved):
+            self._set_save_dir(saved)
+            return
+        npwr_root = PORTABLE_DIR / "tus" / "NPWR04428_00"
+        try:
+            npwr_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        matches = sorted(p for p in npwr_root.glob("*") if p.is_dir())
         if matches:
-            self._save_dir = matches[0]
-            short = Path(self._save_dir).relative_to(APP_DIR.parent) if APP_DIR.parent in Path(self._save_dir).parents else Path(self._save_dir)
-            self._path_label.setText(f"Save folder: {short}")
+            self._set_save_dir(str(matches[0]))
         else:
             self._save_dir = None
             self._path_label.setText("Save folder: not found (launch the game once first)")
 
+    def _set_save_dir(self, folder: str):
+        self._save_dir = folder
+        try:
+            short = Path(folder).relative_to(APP_DIR.parent)
+        except ValueError:
+            short = Path(folder)
+        self._path_label.setText(f"Save folder: {short}")
+        settings = load_settings()
+        if settings.get("save_editor_folder") != folder:
+            settings["save_editor_folder"] = folder
+            save_settings(settings)
+
     def _browse_saves(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select save folder (tus/<comm_id>/<username>)")
+        npwr_root = PORTABLE_DIR / "tus" / "NPWR04428_00"
+        try:
+            npwr_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        start_dir = str(npwr_root if npwr_root.is_dir() else PORTABLE_DIR)
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select save folder (tus/<comm_id>/<username>)", start_dir
+        )
         if folder:
-            self._save_dir = folder
-            self._path_label.setText(f"Save folder: {folder}")
+            self._set_save_dir(folder)
+            self._try_auto_read()
+
+    def _try_auto_read(self):
+        if self._save_dir:
+            self._load_slots()
+
+    def _load_slots(self) -> list[str]:
+        """Reload every slot from the latest backups. Returns per-slot error strings."""
+        self._slot2 = None
+        self._slot3 = None
+        self._slot4 = None
+        backups_dir = os.path.join(self._save_dir, "backups")
+        errors = []
+        for slot_num, slot20d in self._SLOT_IDS:
+            candidates = sorted(glob.glob(os.path.join(backups_dir, f"*_{slot20d}.tdt")))
+            if not candidates:
+                errors.append(f"Slot {slot_num}: no backup found in {backups_dir}")
+                continue
+            try:
+                slot = save_editor.SaveSlot(slot_num, candidates[-1])
+                values = slot.read_all()
+                for arg, val in values.items():
+                    if arg in self._spins:
+                        self._spins[arg].setValue(val)
+                        self._spins[arg].setEnabled(True)
+                if slot_num == 2:
+                    self._slot2 = slot
+                elif slot_num == 3:
+                    self._slot3 = slot
+                else:
+                    self._slot4 = slot
+            except Exception as e:
+                errors.append(f"Slot {slot_num}: {e}")
+        any_loaded = any((self._slot2, self._slot3, self._slot4))
+        self._write_btn.setEnabled(any_loaded)
+        self._reset_penalty_btn.setEnabled(self._slot4 is not None)
+        self._refresh_penalty_label()
+        return errors
+
+    def _refresh_penalty_label(self):
+        if self._slot4 is None:
+            self._penalty_label.setText("Penalty Rank: --")
+        else:
+            val = self._slot4.read_all().get("penalty-rank", 0)
+            self._penalty_label.setText(f"Penalty Rank: {val}")
+
+    def _stage_restore(self, slot_obj: save_editor.SaveSlot):
+        slot20d = Path(slot_obj._path).stem.split("_")[-1]
+        sentinel = os.path.join(self._save_dir, f"{slot20d}.tdt.restore")
+        shutil.copy2(slot_obj._path, sentinel)
 
     def _read_saves(self):
         if not self._save_dir:
             QMessageBox.warning(self, "No save folder", "No save folder selected or detected.")
             return
-        backups_dir = os.path.join(self._save_dir, "backups")
-        errors = []
-        for slot_num, slot20d in ((2, "00000000000000000002"),
-                                   (3, "00000000000000000003")):
-            candidates = sorted(glob.glob(os.path.join(backups_dir, f"*_{slot20d}.tdt")))
-            if not candidates:
-                errors.append(f"Slot {slot_num}: no backup found in {backups_dir}")
-                continue
-            path = candidates[-1]
-            try:
-                slot = save_editor.SaveSlot(slot_num, path)
-                values = slot.read_all()
-                for arg, val in values.items():
-                    if arg in self._spins:
-                        self._spins[arg].setValue(val)
-                if slot_num == 2:
-                    self._slot2 = slot
-                else:
-                    self._slot3 = slot
-            except Exception as e:
-                errors.append(f"Slot {slot_num}: {e}")
+        errors = self._load_slots()
         if errors:
             QMessageBox.warning(self, "Load errors", "\n".join(errors))
         else:
-            self._write_btn.setEnabled(True)
             QMessageBox.information(self, "Loaded", "Save files read successfully.")
 
     def _write_saves(self):
-        if not self._slot2 and not self._slot3:
+        if not self._slot2 and not self._slot3 and not self._slot4:
             QMessageBox.warning(self, "Not loaded", "Read save files first.")
             return
         errors = []
-        for slot_num, slot_obj in ((2, self._slot2), (3, self._slot3)):
+        for slot_num, slot_obj in ((2, self._slot2), (3, self._slot3), (4, self._slot4)):
             if slot_obj is None:
                 continue
-            fields = save_editor.fields_for_slot(slot_num)
-            for f in fields:
+            for f in save_editor.fields_for_slot(slot_num):
                 if f["arg"] in self._spins:
                     try:
                         slot_obj.write_field(f["arg"], self._spins[f["arg"]].value())
@@ -607,11 +765,10 @@ class SaveEditorTab(QWidget):
                         errors.append(f"Slot {slot_num} / {f['label']}: {e}")
             try:
                 slot_obj.save()
-                slot20d = Path(slot_obj._path).stem.split("_")[-1]
-                sentinel = os.path.join(self._save_dir, f"{slot20d}.tdt.restore")
-                shutil.copy2(slot_obj._path, sentinel)
+                self._stage_restore(slot_obj)
             except Exception as e:
                 errors.append(f"Slot {slot_num} save failed: {e}")
+        self._refresh_penalty_label()
         if errors:
             QMessageBox.critical(self, "Write errors", "\n".join(errors))
         else:
@@ -621,6 +778,57 @@ class SaveEditorTab(QWidget):
                 "Save files written and restore staged.\n\n"
                 "Boot OP ETERNAL once to apply the changes."
             )
+
+    def _reset_penalty_rank(self):
+        if self._slot4 is None:
+            QMessageBox.warning(self, "Not loaded", "Slot 4 has not been read yet.")
+            return
+        ok, msg = self._apply_penalty_reset()
+        if not ok:
+            QMessageBox.critical(self, "Reset failed", msg)
+            return
+        QMessageBox.information(
+            self, "Penalty Rank reset",
+            "Penalty Rank reset to 0 and restore staged.\n\n"
+            "Boot OP ETERNAL once to apply the change."
+        )
+
+    def _apply_penalty_reset(self) -> tuple[bool, str]:
+        if self._slot4 is None:
+            return False, "Slot 4 has not been read yet."
+        try:
+            self._slot4.write_field("penalty-rank", 0)
+            self._slot4.save()
+            self._stage_restore(self._slot4)
+        except Exception as e:
+            return False, str(e)
+        if "penalty-rank" in self._spins:
+            self._spins["penalty-rank"].setValue(0)
+        self._refresh_penalty_label()
+        self.restore_staged.emit()
+        return True, ""
+
+    def peek_latest_penalty(self) -> tuple[int | None, str | None]:
+        """Return (penalty_rank, backup_path) for the newest slot 4 backup, else (None, None)."""
+        if not self._save_dir:
+            return None, None
+        backups_dir = os.path.join(self._save_dir, "backups")
+        candidates = sorted(glob.glob(os.path.join(backups_dir, "*_00000000000000000004.tdt")))
+        if not candidates:
+            return None, None
+        latest = candidates[-1]
+        try:
+            slot = save_editor.SaveSlot(4, latest)
+            return slot.read_all().get("penalty-rank", 0), latest
+        except Exception:
+            return None, None
+
+    def reset_penalty_from_latest(self) -> tuple[bool, str]:
+        """Reload slot 4 from the latest backup, reset penalty-rank to 0, refresh the UI."""
+        if not self._save_dir:
+            return False, "No save folder."
+        self._load_slots()
+        return self._apply_penalty_reset()
 
 # ---------------------------------------------------------------------------
 # Backup / Restore sub-tab
@@ -926,6 +1134,57 @@ class SettingsTab(QWidget):
         self._tss_url.clear()
 
 # ---------------------------------------------------------------------------
+# Game server log watcher
+# ---------------------------------------------------------------------------
+class GameServerLogWatcher(QObject):
+    """Polls gameserver.log for `ev_save_load_error` (no-save-on-server boot failure)."""
+
+    SAVE_LOAD_ERROR_TOKEN = b"ev_save_load_error"
+    POLL_MS = 2000
+
+    save_load_error_seen = Signal()
+
+    def __init__(self, log_path: Path, parent=None):
+        super().__init__(parent)
+        self._log_path = log_path
+        self._pos = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.POLL_MS)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):
+        # Start at EOF; only events written from now on count.
+        try:
+            self._pos = self._log_path.stat().st_size
+        except OSError:
+            self._pos = 0
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+
+    def _tick(self):
+        try:
+            size = self._log_path.stat().st_size
+        except OSError:
+            return
+        if size < self._pos:
+            # Log rotated; restart from the beginning.
+            self._pos = 0
+        if size <= self._pos:
+            return
+        try:
+            with self._log_path.open("rb") as fh:
+                fh.seek(self._pos)
+                chunk = fh.read()
+        except OSError:
+            return
+        self._pos += len(chunk)
+        if self.SAVE_LOAD_ERROR_TOKEN in chunk:
+            self.save_load_error_seen.emit()
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
 class ACILauncher(QMainWindow):
@@ -938,6 +1197,8 @@ class ACILauncher(QMainWindow):
         self._rpcs3_proc  = processes.ManagedProcess("rpcs3", self)
 
         self._restore_staged = False
+        self._save_load_offer_shown = False
+        self._last_penalty_check_path: str | None = None
 
         for proc, name in ((self._gameserver, "gameserver"),
                            (self._rpcn_proc,  "rpcn"),
@@ -952,6 +1213,13 @@ class ACILauncher(QMainWindow):
         self.setWindowTitle(f"OPERATION ETERNAL LIBERATION {VERSION}")
         self.setFixedSize(720, 660)
         self._build_ui()
+
+        self._log_watcher = GameServerLogWatcher(GAMESERVER_LOG, self)
+        self._log_watcher.save_load_error_seen.connect(self._on_save_load_error)
+        self._log_watcher.start()
+
+        # Let the window paint before the first penalty check.
+        QTimer.singleShot(800, self._check_penalty_rank)
 
     def _build_ui(self):
         central = QWidget()
@@ -1028,8 +1296,10 @@ class ACILauncher(QMainWindow):
                                     "Expected: host  or  host:http_port:https_port")
                 return
 
+        self._save_load_offer_shown = False
         self._play_tab.set_launch_enabled(False)
-        self._worker = LaunchWorker(rpcn_host, rpcn_mode, self)
+        lan_ip_override = self._play_tab.get_lan_ip_override()
+        self._worker = LaunchWorker(rpcn_host, rpcn_mode, lan_ip_override, self)
         self._worker.log.connect(self._on_worker_log)
         self._worker.failed.connect(self._on_worker_failed)
         self._worker.done.connect(self._on_worker_done)
@@ -1094,12 +1364,94 @@ class ACILauncher(QMainWindow):
         self._play_tab.refresh_setup_status()
         tus_saves.cleanup_restore_sentinels(str(PORTABLE_DIR / "tus"))
         self._restore_staged = False
+        # Pick up any backups written this session before the penalty check.
+        self._saves_tab.editor_tab._try_auto_read()
+        self._check_penalty_rank()
+
+    def _check_penalty_rank(self):
+        editor = self._saves_tab.editor_tab
+        rank, path = editor.peek_latest_penalty()
+        if rank is None or path is None:
+            return
+        if rank <= 0:
+            self._last_penalty_check_path = path
+            return
+        if path == self._last_penalty_check_path:
+            return
+        self._last_penalty_check_path = path
+        reply = QMessageBox.question(
+            self, "Penalty Rank detected",
+            f"Your latest save shows a Penalty Rank of {rank}.\n\n"
+            "Would you like to reset it to 0?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        confirm = QMessageBox.warning(
+            self, "Confirm Penalty Rank reset",
+            "This will write Penalty Rank = 0 to your local save and stage it "
+            "for the game to apply on next boot. The change syncs to RPCN the "
+            "next time the game saves.\n\n"
+            "Proceed?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        ok, msg = editor.reset_penalty_from_latest()
+        if not ok:
+            QMessageBox.warning(self, "Reset failed", msg)
+            return
+        self._restore_staged = True
+        QMessageBox.information(
+            self, "Done",
+            "Penalty Rank reset to 0 and restore staged.\n"
+            "Boot OP ETERNAL once to apply the change."
+        )
+
+    def _on_save_load_error(self):
+        if self._save_load_offer_shown:
+            return
+        self._save_load_offer_shown = True
+        reply = QMessageBox.question(
+            self, "Save load error detected",
+            "The game just reported a save load error.\n\n"
+            "Usually this means your account has no save on this server yet "
+            "and the game cannot get past the initial connect screen until a "
+            "fresh save is staged.\n\n"
+            "Run a New Game Override now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        confirm = QMessageBox.warning(
+            self, "Confirm New Game Override",
+            "This stages empty save slots that the game will treat as a fresh "
+            "start. If you save in-game after this, the empty state writes to "
+            "RPCN and any existing cloud save is overwritten.\n\n"
+            "If you have a save you want to keep, cancel and use "
+            "Saves > Backup / Restore instead.\n\n"
+            "Proceed?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        staged, errors = tus_saves.stage_new_game(str(PORTABLE_DIR / "tus"), str(RPCN_YML))
+        self._restore_staged = True
+        if errors:
+            QMessageBox.warning(self, "Errors", "\n".join(errors))
+        else:
+            QMessageBox.information(
+                self, "Done",
+                f"{staged} slot(s) staged.\n"
+                "Reboot OPERATION ETERNAL LIBERATION to start fresh."
+            )
 
     def _on_settings_saved(self, settings: dict):
         self._settings = settings
         self._tss_tab._settings = settings
 
     def closeEvent(self, event):
+        self._log_watcher.stop()
         for proc in (self._gameserver, self._rpcn_proc, self._rpcs3_proc):
             proc.stop()
         super().closeEvent(event)

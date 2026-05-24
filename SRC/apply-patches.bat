@@ -7,19 +7,31 @@ echo  ACI-RPCS3 -- Apply source patches
 echo ============================================================
 echo.
 
-echo [1/2] Applying RPCS3 TSS patch...
+echo [1/3] Applying RPCS3 TSS patch...
 cd /d "%SRC%GIT\rpcs3"
 git apply "..\..\PATCH\RPCS3\tss-support.patch"
 if errorlevel 1 (
     echo.
-    echo ERROR: RPCS3 patch failed.
+    echo ERROR: RPCS3 TSS patch failed.
     echo Make sure SRC\GIT\rpcs3 is a clean clone with no local modifications.
     pause & exit /b 1
 )
 echo Done.
 echo.
 
-echo [2/2] Applying RPCN TSS server patch...
+echo [2/3] Applying RPCS3 P2PS disconnect fix patch...
+cd /d "%SRC%GIT\rpcs3"
+git apply "..\..\PATCH\RPCS3\p2ps-disconnect-fix.patch"
+if errorlevel 1 (
+    echo.
+    echo ERROR: RPCS3 P2PS patch failed.
+    echo Make sure SRC\GIT\rpcs3 is a clean clone with no local modifications.
+    pause & exit /b 1
+)
+echo Done.
+echo.
+
+echo [3/3] Applying RPCN TSS server patch...
 cd /d "%SRC%GIT\rpcn"
 git apply "..\..\PATCH\RPCN\tss-server.patch"
 if errorlevel 1 (
@@ -32,7 +44,7 @@ echo Done.
 echo.
 
 echo ============================================================
-echo  Both patches applied successfully.
+echo  All patches applied successfully.
 echo.
 echo  Next steps:
 echo    RPCS3: Follow SRC\GIT\rpcs3\BUILDING.md (Visual Studio 2022)

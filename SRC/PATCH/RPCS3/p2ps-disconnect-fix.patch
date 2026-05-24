@@ -1,0 +1,384 @@
+diff --git a/rpcs3/Emu/Cell/lv2/sys_net.cpp b/rpcs3/Emu/Cell/lv2/sys_net.cpp
+index a860d43b1..2cab9f46a 100644
+--- a/rpcs3/Emu/Cell/lv2/sys_net.cpp
++++ b/rpcs3/Emu/Cell/lv2/sys_net.cpp
+@@ -1452,6 +1452,8 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
+ 	sys_net_fd_set rexcept{}, _exceptfds{};
+ 	u64 timeout = !_timeout ? 0 : _timeout->tv_sec * 1000000ull + _timeout->tv_usec;
+ 
++	sys_net.trace("bnet_select: nfds=%d _timeout=%s timeout_us=%llu", nfds, _timeout ? "non-null" : "null", timeout);
++
+ 	if (nfds > 0 && nfds <= 1024)
+ 	{
+ 		if (readfds)
+@@ -1461,8 +1463,11 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
+ 		if (exceptfds)
+ 			_exceptfds = *exceptfds;
+ 
++		sys_net.trace("bnet_select: acquiring mutex_thread_loop");
+ 		std::lock_guard nw_lock(g_fxo->get<network_context>().mutex_thread_loop);
++		sys_net.trace("bnet_select: acquired mutex_thread_loop, acquiring g_mutex");
+ 		reader_lock lock(id_manager::g_mutex);
++		sys_net.trace("bnet_select: both mutexes acquired, entering first-pass loop nfds=%d", nfds);
+ 
+ 		std::vector<::pollfd> _fds(nfds);
+ #ifdef _WIN32
+@@ -1492,7 +1497,9 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
+ 
+ 			if (auto sock = idm::check_unlocked<lv2_socket>((lv2_socket::id_base & -1024) + i))
+ 			{
++				sys_net.trace("bnet_select: first-pass fd=%d calling sock->select", i);
+ 				auto [read_set, write_set, except_set] = sock->select(selected, _fds[i]);
++				sys_net.trace("bnet_select: first-pass fd=%d read=%d write=%d except=%d", i, static_cast<int>(read_set), static_cast<int>(write_set), static_cast<int>(except_set));
+ 
+ 				if (read_set || write_set || except_set)
+ 				{
+@@ -1524,6 +1531,7 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
+ 			}
+ 		}
+ 
++		sys_net.trace("bnet_select: after first-pass signaled=%d, calling native poll", signaled.load());
+ #ifdef _WIN32
+ 		windows_poll(_fds, nfds, 0, connecting);
+ #else
+@@ -1543,6 +1551,10 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
+ 			}
+ 		}
+ 
++		sys_net.trace("bnet_select: after native poll signaled=%d, _timeout=%s !timeout=%d → %s",
++			signaled.load(), _timeout ? "non-null" : "null", !timeout,
++			((_timeout && !timeout) || signaled) ? "IMMEDIATE_RETURN" : "WILL_SLEEP");
++
+ 		if ((_timeout && !timeout) || signaled)
+ 		{
+ 			if (readfds)
+@@ -1607,6 +1619,7 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
+ 			}
+ 		}
+ 
++		sys_net.trace("bnet_select: ENTERING SLEEP timeout_us=%llu signaled=%d _timeout=%s", timeout, signaled.load(), _timeout ? "non-null" : "null");
+ 		lv2_obj::sleep(ppu, timeout);
+ 	}
+ 	else
+diff --git a/rpcs3/Emu/Cell/lv2/sys_net/lv2_socket_p2ps.cpp b/rpcs3/Emu/Cell/lv2/sys_net/lv2_socket_p2ps.cpp
+index cb5955745..209deb26b 100644
+--- a/rpcs3/Emu/Cell/lv2/sys_net/lv2_socket_p2ps.cpp
++++ b/rpcs3/Emu/Cell/lv2/sys_net/lv2_socket_p2ps.cpp
+@@ -4,6 +4,7 @@
+ #include "util/atomic.hpp"
+ #include "lv2_socket_p2ps.h"
+ #include "Emu/NP/np_helpers.h"
++#include "Emu/NP/signaling_handler.h"
+ #include "nt_p2p_port.h"
+ #include "network_context.h"
+ #include "sys_net_helpers.h"
+@@ -41,6 +42,7 @@ public:
+ 	void confirm_data_received(s32 sock_id, u64 ack)
+ 	{
+ 		std::lock_guard lock(data_mutex);
++		const unsigned long had_retries = rtts[sock_id].num_retries;
+ 		rtts[sock_id].num_retries = 0;
+ 
+ 		const auto now = steady_clock::now();
+@@ -50,15 +52,19 @@ public:
+ 			auto& msg = it->second;
+ 			if (msg.sock_id == sock_id && msg.seq < ack)
+ 			{
+-				// Decreases RTT if msg is early
+-				if (now < it->first)
++				if (had_retries == 0)
+ 				{
+ 					const auto actual_rtt = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.initial_sendtime);
+-					const auto cur_rtt    = rtts[sock_id].rtt_time;
+-					if (cur_rtt > actual_rtt)
+-					{
+-						rtts[sock_id].rtt_time = (actual_rtt + cur_rtt) / 2;
+-					}
++					auto& rtt = rtts[sock_id];
++					// RTTVAR = 3/4*RTTVAR + 1/4*|SRTT - R|
++					const auto diff = actual_rtt > rtt.srtt ? actual_rtt - rtt.srtt : rtt.srtt - actual_rtt;
++					rtt.rttvar = rtt.rttvar - rtt.rttvar / 4 + diff / 4;
++					rtt.rttvar = std::clamp(rtt.rttvar, std::chrono::milliseconds(0), std::chrono::milliseconds(4000));
++					// SRTT = 7/8*SRTT + 1/8*R
++					rtt.srtt = rtt.srtt + (actual_rtt - rtt.srtt) / 8;
++					rtt.srtt = std::clamp(rtt.srtt, std::chrono::milliseconds(100), std::chrono::milliseconds(4000));
++					// RTO = SRTT + 4*RTTVAR
++					rtt.rtt_time = std::clamp(rtt.srtt + 4 * rtt.rttvar, std::chrono::milliseconds(500), std::chrono::milliseconds(8000));
+ 				}
+ 				it = msgs.erase(it);
+ 				continue;
+@@ -111,35 +117,47 @@ public:
+ 					break;
+ 
+ 				// reply is late, increases rtt
+-				auto& msg       = it->second;
+-				rtt_info rtt    = rtts[msg.sock_id];
++				auto& msg          = it->second;
++				const s32 sock_id  = msg.sock_id;
++				rtt_info rtt       = rtts[sock_id];
+ 				// Only increases rtt once per loop(in case a big number of packets are sent at once)
+-				if (!rtt_increased.count(msg.sock_id))
++				if (!rtt_increased.count(sock_id))
+ 				{
+ 					rtt.num_retries += 1;
+-					// Increases current rtt by 10%
+-					rtt.rtt_time += (rtt.rtt_time / 10);
+-					rtts[msg.sock_id] = rtt;
++					// exponential backoff, capped at 8 s
++					rtt.rtt_time = std::min(rtt.rtt_time * 2, std::chrono::milliseconds(8000));
++					rtts[sock_id] = rtt;
+ 
+-					rtt_increased.emplace(msg.sock_id);
++					rtt_increased.emplace(sock_id);
+ 				}
+ 
+-				if (rtt.num_retries >= 10)
++				if (rtt.num_retries >= 15)
+ 				{
+ 					// Too many retries, need to notify the socket that the connection is dead
+-					idm::check<lv2_socket>(msg.sock_id, [&](lv2_socket& sock)
++					sys_net.error("[P2PS] Too many retries on socket %d, closing the stream", sock_id);
++					// Without signaling INACTIVE before P2PS POLLHUP, P2PS timeout fires
++					// ~18s before RPCN's member-left notification and the lobby stalls
++					// for that gap. Dispatching the event here closes the window between
++					// teardown and signaling.
++					g_fxo->get<named_thread<signaling_handler>>().force_disconnect_by_addr(
++						msg.dst_addr.sin_addr.s_addr,
++						std::bit_cast<u16, be_t<u16>>(msg.dst_addr.sin_port));
++					idm::check<lv2_socket>(sock_id, [&](lv2_socket& sock)
+ 						{
+-							sys_net.error("[P2PS] Too many retries, closing the stream");
+ 							ensure(sock.get_type() == SYS_NET_SOCK_STREAM_P2P);
+ 							auto& sock_p2ps = reinterpret_cast<lv2_socket_p2ps&>(sock);
+ 							sock_p2ps.close_stream();
+ 						});
+ 					it = msgs.erase(it);
++					// Remove all remaining messages for this socket while data_mutex is held.
++					// close_stream_nl cannot call clear_all_messages here (would re-acquire data_mutex -> deadlock).
++					for (auto jt = msgs.begin(); jt != msgs.end(); )
++						jt = (jt->second.sock_id == sock_id) ? msgs.erase(jt) : std::next(jt);
+ 					continue;
+ 				}
+ 
+ 				// resend the message
+-				const auto res = idm::check<lv2_socket>(msg.sock_id, [&](lv2_socket& sock) -> bool
++				const auto res = idm::check<lv2_socket>(sock_id, [&](lv2_socket& sock) -> bool
+ 					{
+ 						ensure(sock.get_type() == SYS_NET_SOCK_STREAM_P2P);
+ 						auto& sock_p2ps = reinterpret_cast<lv2_socket_p2ps&>(sock);
+@@ -163,6 +181,10 @@ public:
+ 				if (!res || !res.ret)
+ 				{
+ 					it = msgs.erase(it);
++					// Remove all remaining messages for this socket (send failed -> stream closed,
++					// or socket gone). data_mutex already held; cannot call clear_all_messages.
++					for (auto jt = msgs.begin(); jt != msgs.end(); )
++						jt = (jt->second.sock_id == sock_id) ? msgs.erase(jt) : std::next(jt);
+ 					continue;
+ 				}
+ 
+@@ -213,12 +235,14 @@ private:
+ 		u64 seq = 0;
+ 		steady_clock::time_point initial_sendtime{};
+ 	};
+-	std::map<steady_clock::time_point, message> msgs; // (wakeup time, msg)
++	std::multimap<steady_clock::time_point, message> msgs;
+ 	// List of rtts
+ 	struct rtt_info
+ 	{
+ 		unsigned long num_retries          = 0;
+-		std::chrono::milliseconds rtt_time = 50ms;
++		std::chrono::milliseconds rtt_time = 1000ms;
++		std::chrono::milliseconds srtt     = 1000ms;
++		std::chrono::milliseconds rttvar   = 0ms;
+ 	};
+ 	std::unordered_map<s32, rtt_info> rtts; // (sock_id, rtt)
+ };
+@@ -407,8 +431,10 @@ bool lv2_socket_p2ps::handle_connected(p2ps_encapsulated_tcp* tcp_header, u8* da
+ 		case p2ps_tcp_flags::RST:
+ 		case p2ps_tcp_flags::FIN:
+ 		{
+-			sys_net.error("[P2PS] Received RST/FIN packet(%d), closing the stream", tcp_header->flags);
++			sys_net.error("[P2PS] Received %s on socket %d, closing the stream",
++				(tcp_header->flags & p2ps_tcp_flags::RST) ? "RST" : "FIN", lv2_id);
+ 			close_stream_nl(p2p_port);
++			g_fxo->get<named_thread<tcp_timeout_monitor>>().clear_all_messages(lv2_id);
+ 			return false;
+ 		}
+ 		default:
+@@ -543,6 +569,8 @@ void lv2_socket_p2ps::close_stream_nl(nt_p2p_port* p2p_port)
+ {
+ 	status = p2ps_stream_status::stream_closed;
+ 
++	sys_net.notice("[P2PS] stream %d closed, %zu blocked recvfrom(s)", lv2_id, queue.size());
++
+ 	for (auto it = p2p_port->bound_p2p_streams.begin(); it != p2p_port->bound_p2p_streams.end();)
+ 	{
+ 		if (it->second == lv2_id)
+@@ -553,8 +581,25 @@ void lv2_socket_p2ps::close_stream_nl(nt_p2p_port* p2p_port)
+ 		it++;
+ 	}
+ 
+-	auto& tcpm = g_fxo->get<named_thread<tcp_timeout_monitor>>();
+-	tcpm.clear_all_messages(lv2_id);
++	if (!queue.empty())
++	{
++		bs_t<lv2_socket::poll_t> read_event = lv2_socket::poll_t::read;
++		events.test_and_reset(lv2_socket::poll_t::read);
++		for (auto it = queue.begin(); it != queue.end();)
++		{
++			if (it->second(read_event))
++			{
++				it = queue.erase(it);
++				continue;
++			}
++			it++;
++		}
++		if (queue.empty())
++		{
++			events.store({});
++		}
++	}
++
+ }
+ 
+ void lv2_socket_p2ps::close_stream()
+@@ -829,7 +874,7 @@ std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_p2p
+ 		if (status == p2ps_stream_status::stream_closed)
+ 		{
+ 			sys_net.error("[P2PS] Called recvfrom on closed socket!");
+-			return {{0, {}, {}}};
++			return {{-SYS_NET_ECONNRESET, {}, {}}};
+ 		}
+ 
+ 		if (so_nbio || (flags & SYS_NET_MSG_DONTWAIT))
+@@ -1003,11 +1048,25 @@ void lv2_socket_p2ps::poll(sys_net_pollfd& sn_pfd, [[maybe_unused]] pollfd& nati
+ 			sn_pfd.revents |= SYS_NET_POLLOUT;
+ 		}
+ 	}
++	else if (status == p2ps_stream_status::stream_closed)
++	{
++		sn_pfd.revents |= SYS_NET_POLLHUP;
++		if ((sn_pfd.events & SYS_NET_POLLIN) && data_available)
++		{
++			sn_pfd.revents |= SYS_NET_POLLIN;
++		}
++	}
+ }
+ 
+ std::tuple<bool, bool, bool> lv2_socket_p2ps::select(bs_t<lv2_socket::poll_t> selected, [[maybe_unused]] pollfd& native_pfd)
+ {
++	sys_net.trace("[P2PS] select entry: acquiring mutex (lv2_id=%d)", lv2_id);
+ 	std::lock_guard lock(mutex);
++	sys_net.trace("[P2PS] select mutex acquired (lv2_id=%d status=%s data_available=%u)", lv2_id,
++		status == p2ps_stream_status::stream_closed ? "CLOSED" :
++		status == p2ps_stream_status::stream_connected ? "CONNECTED" :
++		status == p2ps_stream_status::stream_listening ? "LISTENING" : "HANDSHAKING",
++		data_available);
+ 
+ 	bool read_set  = false;
+ 	bool write_set = false;
+@@ -1035,6 +1094,14 @@ std::tuple<bool, bool, bool> lv2_socket_p2ps::select(bs_t<lv2_socket::poll_t> se
+ 			read_set = true;
+ 		}
+ 	}
++	else if (status == p2ps_stream_status::stream_closed)
++	{
++		if (selected & lv2_socket::poll_t::read)
++		{
++			sys_net.trace("[P2PS] select on CLOSED socket, signaling read_set=true");
++			read_set = true;
++		}
++	}
+ 
+ 	return {read_set, write_set, false};
+ }
+diff --git a/rpcs3/Emu/Cell/lv2/sys_net/sys_net_helpers.cpp b/rpcs3/Emu/Cell/lv2/sys_net/sys_net_helpers.cpp
+index 6bc03320c..9f35227ae 100644
+--- a/rpcs3/Emu/Cell/lv2/sys_net/sys_net_helpers.cpp
++++ b/rpcs3/Emu/Cell/lv2/sys_net/sys_net_helpers.cpp
+@@ -245,11 +245,12 @@ void windows_poll(std::vector<pollfd>& fds, unsigned long nfds, int timeout, std
+ 	ensure(connecting.size() >= nfds);
+ 
+ 	// Don't call WSAPoll with zero nfds (errors 10022 or 10038)
+-	if (std::none_of(fds.begin(), fds.begin() + nfds, [](pollfd& pfd)
+-			{
+-				return pfd.fd != INVALID_SOCKET;
+-			}))
++	const auto valid_count = std::count_if(fds.begin(), fds.begin() + nfds, [](const pollfd& pfd) { return pfd.fd != INVALID_SOCKET; });
++	sys_net.trace("windows_poll: nfds=%u timeout=%d valid_fds=%lld", nfds, timeout, valid_count);
++
++	if (valid_count == 0)
+ 	{
++		sys_net.trace("windows_poll: all INVALID_SOCKET, skipping WSAPoll");
+ 		if (timeout > 0)
+ 		{
+ 			Sleep(timeout);
+@@ -258,14 +259,19 @@ void windows_poll(std::vector<pollfd>& fds, unsigned long nfds, int timeout, std
+ 		return;
+ 	}
+ 
++	sys_net.trace("windows_poll: calling WSAPoll with %lld valid fds", valid_count);
+ 	int r = ::WSAPoll(fds.data(), nfds, timeout);
+ 
+ 	if (r == SOCKET_ERROR)
+ 	{
+-		sys_net.error("WSAPoll failed: %s", fmt::win_error{static_cast<unsigned long>(WSAGetLastError()), nullptr});
++		const auto wsa_err = WSAGetLastError();
++		sys_net.error("WSAPoll failed: %s", fmt::win_error{static_cast<unsigned long>(wsa_err), nullptr});
++		sys_net.trace("windows_poll: WSAPoll SOCKET_ERROR wsa_err=%u, all revents will be 0", wsa_err);
+ 		return;
+ 	}
+ 
++	sys_net.trace("windows_poll: WSAPoll returned %d ready fds", r);
++
+ 	for (unsigned long i = 0; i < nfds; i++)
+ 	{
+ 		if (connecting[i])
+diff --git a/rpcs3/Emu/NP/signaling_handler.cpp b/rpcs3/Emu/NP/signaling_handler.cpp
+index a4c59763c..9fd34ac45 100644
+--- a/rpcs3/Emu/NP/signaling_handler.cpp
++++ b/rpcs3/Emu/NP/signaling_handler.cpp
+@@ -866,3 +866,30 @@ std::optional<u32> signaling_handler::get_conn_id_from_addr(u32 addr, u16 port)
+ 
+ 	return std::nullopt;
+ }
++
++void signaling_handler::force_disconnect_by_addr(u32 addr, u16 port)
++{
++	std::lock_guard lock(data_mutex);
++
++	for (auto& [conn_id, si] : sig_peers)
++	{
++		if (!si || si->conn_status == SCE_NP_SIGNALING_CONN_STATUS_INACTIVE)
++			continue;
++
++		// Both si->addr and addr are in network byte order (sin_addr.s_addr format).
++		// si->addr is the peer's actual IP (local on LAN, NAT external in production).
++		// RPCN never relays P2PS data.
++		const bool direct_match = (si->addr == addr);
++		const bool mapped_match = (si->mapped_addr != 0 && si->mapped_addr == addr);
++
++		if (direct_match || mapped_match)
++		{
++			sign_log.notice("[P2PS] P2PS timeout triggered signaling disconnect for conn_id %d (%s match)",
++				conn_id, direct_match ? "direct" : "mapped");
++			update_si_status(si, SCE_NP_SIGNALING_CONN_STATUS_INACTIVE, SCE_NP_SIGNALING_ERROR_TIMEOUT);
++			return;
++		}
++	}
++
++	sign_log.notice("[P2PS] P2PS timeout: no active signaling connection found");
++}
+diff --git a/rpcs3/Emu/NP/signaling_handler.h b/rpcs3/Emu/NP/signaling_handler.h
+index c97c049d3..732a8dacb 100644
+--- a/rpcs3/Emu/NP/signaling_handler.h
++++ b/rpcs3/Emu/NP/signaling_handler.h
+@@ -77,6 +77,7 @@ public:
+ 	void start_sig(u32 conn_id, u32 addr, u16 port);
+ 	void stop_sig(u32 conn_id, bool forceful);
+ 	void send_information_packets(u32 addr, u16 port, const SceNpId& npid);
++	void force_disconnect_by_addr(u32 addr, u16 port);
+ 
+ 	void disconnect_sig2_users(u64 room_id);
+ 

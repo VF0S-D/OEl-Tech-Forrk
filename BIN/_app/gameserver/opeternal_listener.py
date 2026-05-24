@@ -79,23 +79,17 @@ def _rotate_log():
     _log_file = log_path.open("a", encoding="utf-8")
 
 
-def _compress_log_on_exit():
+def _close_log_on_exit():
+    # Leave the log on disk; the next startup rotates it. The launcher's
+    # log watcher reads it between sessions.
     global _log_file
     if _log_file and not _log_file.closed:
+        try:
+            _log_file.flush()
+        except OSError:
+            pass
         _log_file.close()
         _log_file = None
-    log_path = LOG_DIR / "gameserver.log"
-    if not (log_path.exists() and log_path.stat().st_size > 0):
-        return
-    ts = _dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    gz_path = LOG_DIR / f"gameserver_{ts}.log.gz"
-    try:
-        with log_path.open("rb") as src, gzip.open(gz_path, "wb") as dst:
-            dst.write(src.read())
-        log_path.unlink()
-        _prune_gz_logs()
-    except OSError:
-        pass
 
 
 _ctrl_handler_ref = None  # must stay alive for the lifetime of the process
@@ -112,7 +106,7 @@ def _install_close_handler():
         # 2=CTRL_CLOSE_EVENT  5=CTRL_LOGOFF_EVENT  6=CTRL_SHUTDOWN_EVENT
         if event in (2, 5, 6):
             log("shutting down")
-            _compress_log_on_exit()
+            _close_log_on_exit()
         return False
 
     _ctrl_handler_ref = HandlerRoutine(_handler)
@@ -131,9 +125,10 @@ def ensure_cert():
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.x509.oid import NameOID
     except ImportError:
+        helper = "setup.bat" if sys.platform == "win32" else "setup.sh"
         sys.exit(
             "[setup] missing 'cryptography' package.\n"
-            "        run setup.bat then re-run this script."
+            f"        run {helper} then re-run this script."
         )
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([
@@ -534,7 +529,7 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         log("shutting down")
-        _compress_log_on_exit()
+        _close_log_on_exit()
 
 
 if __name__ == "__main__":

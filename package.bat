@@ -48,8 +48,11 @@ if exist "%ROOT%OEL-SRC-!VERSION!.7z" del "%ROOT%OEL-SRC-!VERSION!.7z"
     "%ROOT%SRC\README.md" ^
     "%ROOT%SRC\PATCH\" ^
     "%ROOT%SRC\apply-patches.bat" ^
+    "%ROOT%SRC\apply-patches.sh" ^
     "%ROOT%SRC\clone-git-repos.bat" ^
+    "%ROOT%SRC\clone-git-repos.sh" ^
     "%ROOT%SRC\reset-git-repos.bat" ^
+    "%ROOT%SRC\reset-git-repos.sh" ^
     "%ROOT%SRC\pinned-commits.env"
 if errorlevel 1 (
     echo ERROR: SRC packaging failed.

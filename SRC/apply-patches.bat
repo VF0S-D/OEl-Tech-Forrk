@@ -41,6 +41,16 @@ if errorlevel 1 (
 )
 echo Done.
 echo.
+echo [2c/3] Applying RPCN roomdata NotFound fix...
+cd /d "%SRC%GIT\rpcs3"
+git apply "..\..\PATCH\RPCS3\rpcn-roomdata-notfound-fix.patch"
+if errorlevel 1 (
+    echo.
+    echo ERROR: RPCN roomdata NotFound fix patch failed.
+    pause & exit /b 1
+)
+echo Done.
+echo.
 echo [3/3] Applying RPCN TSS server patch...
 cd /d "%SRC%GIT\rpcn"
 git apply "..\..\PATCH\RPCN\tss-server.patch"
